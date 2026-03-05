@@ -53,9 +53,9 @@
       AFRAME.registerComponent('motorcycle-rig', {
         schema: {
           acceleration: { type: 'number', default: 20.0 },
-          maxSpeed: { type: 'number', default: 25.0 },
+          maxSpeed: { type: 'number', default: 30.0 },
           turnSensitivity: { type: 'number', default: 1.5 },
-          deadzone: { type: 'number', default: 0.08 }
+          deadzone: { type: 'number', default: 0.04 } // LOWERED: Makes it much easier to trigger the throttle
         },
 
         init: function () {
@@ -115,11 +115,13 @@
           let debugRight = 0;
           let debugLeft = 0;
 
-          // 1. RIGHT HAND: ACCELERATION (Twist wrist up)
+          // 1. RIGHT HAND: ACCELERATION (Twist wrist)
           if (this.rightPinched && this.rightHand) {
             let currentPitch = this.getHandPitch(this.rightHand);
-            // Positive difference means pulling wrist back/up
-            let pitchDiff = currentPitch - this.initialRightPitch;
+            
+            // FIX: Use Absolute value. Twisting up OR down will now successfully trigger the throttle.
+            // This bypasses any issues with how specific headsets interpret axis directions.
+            let pitchDiff = Math.abs(currentPitch - this.initialRightPitch);
             
             debugRight = pitchDiff;
 
@@ -161,9 +163,18 @@
           if (this.speed > this.data.maxSpeed) this.speed = this.data.maxSpeed;
           if (this.speed < 0.05) this.speed = 0;
 
-          // 4. MOVE THE BIKE FORWARD (Translates along local Z axis)
+          // 4. MOVE THE BIKE FORWARD (Explicit World Vector)
           if (this.speed > 0) {
-            this.el.object3D.translateZ(-this.speed * dt);
+            // FIX: Explicitly calculate forward vector on the ground plane.
+            // This prevents A-Frame/WebXR local transform conflicts from stopping movement.
+            let forward = new THREE.Vector3(0, 0, -1);
+            forward.applyQuaternion(this.el.object3D.quaternion);
+            forward.y = 0; // Lock strictly to the ground
+            
+            if (forward.lengthSq() > 0) {
+                forward.normalize();
+                this.el.object3D.position.addScaledVector(forward, this.speed * dt);
+            }
           }
 
           // 5. UPDATE DASHBOARD UI
@@ -173,15 +184,15 @@
             let color = '#00FF00'; // Green while riding
             if (!this.rightPinched && !this.leftPinched) color = '#FF4444'; // Red while braking
             
-            let statusText = "GRAB TO START";
+            let statusText = "PINCH RIGHT HAND TO START";
             if (this.rightPinched || this.leftPinched) statusText = `[ ${turnDirectionText} ]`;
             
             // Format debug string so it's readable
-            let dRightStr = (debugRight > 0 ? "+" : "") + debugRight.toFixed(2);
+            let dRightStr = debugRight.toFixed(2);
             let dLeftStr = (debugLeft > 0 ? "+" : "") + debugLeft.toFixed(2);
 
             this.odoText.setAttribute('value', 
-              `${statusText}\nTHROTTLE: ${throttlePercent}%\nSPEED: ${displaySpeed}m/s\n\n(Debug: R=${dRightStr}, L=${dLeftStr})`
+              `${statusText}\nTHROTTLE: ${throttlePercent}%\nSPEED: ${displaySpeed}m/s\n\n(Debug: Twist=${dRightStr}, Tilt=${dLeftStr})`
             );
             this.odoText.setAttribute('color', color);
           }

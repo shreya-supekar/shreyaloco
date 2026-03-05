@@ -1,155 +1,234 @@
 <!DOCTYPE html>
 <html>
-<head>
-<meta charset="utf-8">
-<title>VR Gesture Locomotion</title>
-
-<script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
-
-<script>
-
-AFRAME.registerComponent("gesture-locomotion",{
-
-schema:{
-acceleration:{default:10},
-maxSpeed:{default:6},
-turnSpeed:{default:2},
-drag:{default:0.95}
-},
-
-init:function(){
-
-this.speed=0
-
-this.rightHand=document.querySelector("#rightHand")
-this.leftHand=document.querySelector("#leftHand")
-
-this.prevRight=new THREE.Vector3()
-this.currRight=new THREE.Vector3()
-
-this.prevLeft=new THREE.Vector3()
-this.currLeft=new THREE.Vector3()
-
-},
-
-tick:function(time,delta){
-
-if(!delta) return
-const dt=delta/1000
-
-/* --------- RIGHT HAND THROTTLE --------- */
-
-this.rightHand.object3D.getWorldPosition(this.currRight)
-
-let forwardMove=this.currRight.z-this.prevRight.z
-
-if(forwardMove<-0.002){
-
-let throttle=Math.min(Math.abs(forwardMove)*40,1)
-
-this.speed+=throttle*this.data.acceleration*dt
-
-}
-
-this.prevRight.copy(this.currRight)
-
-
-/* --------- LEFT HAND STEERING --------- */
-
-this.leftHand.object3D.getWorldPosition(this.currLeft)
-
-let steer=this.currLeft.x-this.prevLeft.x
-
-if(Math.abs(steer)>0.001){
-
-this.el.object3D.rotation.y-=steer*this.data.turnSpeed*5
-
-}
-
-this.prevLeft.copy(this.currLeft)
-
-
-/* --------- SPEED LIMIT --------- */
-
-if(this.speed>this.data.maxSpeed){
-this.speed=this.data.maxSpeed
-}
-
-
-/* --------- DRAG --------- */
-
-this.speed*=this.data.drag
-
-if(this.speed<0.01){
-this.speed=0
-}
-
-
-/* --------- FORWARD MOVEMENT --------- */
-
-if(this.speed>0){
-
-let dir=new THREE.Vector3(0,0,-1)
-
-dir.applyQuaternion(this.el.object3D.quaternion)
-
-dir.normalize()
-
-this.el.object3D.position.addScaledVector(dir,this.speed*dt)
-
-}
-
-}
-
-})
-
-</script>
-
-</head>
-
-
-<body>
-
-<a-scene background="color:#101010">
-
-<!-- PLAYER -->
-
-<a-entity id="rig" gesture-locomotion>
-
-<a-camera position="0 1.6 0"></a-camera>
-
-<a-entity id="leftHand"
-hand-tracking-controls="hand: left">
-</a-entity>
-
-<a-entity id="rightHand"
-hand-tracking-controls="hand: right">
-</a-entity>
-
-</a-entity>
-
-
-<!-- GROUND -->
-
-<a-plane
-rotation="-90 0 0"
-width="2000"
-height="2000"
-color="#222">
-</a-plane>
-
-
-<!-- MOVEMENT REFERENCE OBJECTS -->
-
-<a-box position="0 1 -10" color="#ff0055"></a-box>
-<a-box position="4 1 -20" color="#00ffaa"></a-box>
-<a-box position="-4 1 -30" color="#5599ff"></a-box>
-<a-box position="2 1 -40" color="#ffff00"></a-box>
-<a-box position="-2 1 -50" color="#ff8800"></a-box>
-
-<a-light type="ambient" intensity="1"></a-light>
-
-</a-scene>
-
-</body>
+  <head>
+    <meta charset="utf-8">
+    <title>A-Frame VR: Motorcycle Hand Rev Locomotion</title>
+    <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+
+    <script>
+      /**
+       * CUSTOM COMPONENT: forest-scenery
+       * Generates a road and trees.
+       */
+      AFRAME.registerComponent('forest-scenery', {
+        init: function () {
+          for (let i = 0; i < 200; i++) {
+            let zOffset = - (i * 12); 
+            this.createTree(-5, zOffset);
+            this.createTree(5, zOffset);
+          }
+          for (let i = 0; i < 400; i++) {
+            let x = (Math.random() - 0.5) * 400;
+            let z = (Math.random() - 0.5) * 400;
+            if (Math.abs(x) < 6) continue;
+            this.createTree(x, z);
+          }
+        },
+        createTree: function(x, z) {
+          let tree = document.createElement('a-entity');
+          tree.setAttribute('position', `${x} 0 ${z}`);
+          
+          let trunk = document.createElement('a-cylinder');
+          trunk.setAttribute('radius', '0.25');
+          trunk.setAttribute('height', '2');
+          trunk.setAttribute('color', '#4A3728');
+          trunk.setAttribute('position', '0 1 0');
+          
+          let leaves = document.createElement('a-cone');
+          leaves.setAttribute('radius-bottom', '1.8');
+          leaves.setAttribute('height', '4');
+          leaves.setAttribute('color', '#2E5339');
+          leaves.setAttribute('position', '0 4 0');
+          
+          tree.appendChild(trunk);
+          tree.appendChild(leaves);
+          this.el.appendChild(tree);
+        }
+      });
+
+      /**
+       * CUSTOM COMPONENT: motorcycle-rig
+       * Virtual Joystick Approach (100% reliable position tracking)
+       */
+      AFRAME.registerComponent('motorcycle-rig', {
+        schema: {
+          acceleration: { type: 'number', default: 20.0 },
+          maxSpeed: { type: 'number', default: 30.0 },
+          turnSensitivity: { type: 'number', default: 2.5 },
+          deadzone: { type: 'number', default: 0.05 } // 5cm deadzone so your hands can shake slightly
+        },
+
+        init: function () {
+          this.speed = 0;
+          
+          this.rightPinched = false;
+          this.leftPinched = false;
+          
+          // Store the exact 3D position where the pinch started
+          this.rightStartPos = new THREE.Vector3();
+          this.leftStartPos = new THREE.Vector3();
+          
+          this.currentRightPos = new THREE.Vector3();
+          this.currentLeftPos = new THREE.Vector3();
+          
+          this.rightHand = document.querySelector('#rightHand');
+          this.leftHand = document.querySelector('#leftHand');
+          this.odoText = document.querySelector('#odo-text');
+
+          // RIGHT HAND EVENTS (Throttle)
+          this.rightHand.addEventListener('pinchstarted', () => {
+            this.rightPinched = true;
+            // Record the exact world position when you pinch
+            this.rightHand.object3D.getWorldPosition(this.rightStartPos);
+          });
+          this.rightHand.addEventListener('pinchended', () => {
+            this.rightPinched = false;
+          });
+
+          // LEFT HAND EVENTS (Steering)
+          this.leftHand.addEventListener('pinchstarted', () => {
+            this.leftPinched = true;
+            // Record the exact world position when you pinch
+            this.leftHand.object3D.getWorldPosition(this.leftStartPos);
+          });
+          this.leftHand.addEventListener('pinchended', () => {
+            this.leftPinched = false;
+          });
+        },
+
+        tick: function (time, deltaTime) {
+          if (!deltaTime) return;
+          const dt = deltaTime / 1000; 
+          
+          let throttlePercent = 0;
+          let turnDirectionText = "STRAIGHT";
+          let debugRightDist = 0;
+          let debugLeftMove = 0;
+
+          // 1. RIGHT HAND: ACCELERATION (Push hand away from start point)
+          if (this.rightPinched && this.rightHand) {
+            this.rightHand.object3D.getWorldPosition(this.currentRightPos);
+            
+            // Calculate absolute distance moved from the start pinch
+            let distMoved = this.currentRightPos.distanceTo(this.rightStartPos);
+            debugRightDist = distMoved;
+
+            if (distMoved > this.data.deadzone) {
+              // Throttle maxes out if you push your hand 30cm (0.3m) away
+              let throttle = Math.min((distMoved - this.data.deadzone) / 0.3, 1.0);
+              throttlePercent = Math.round(throttle * 100);
+              this.speed += throttle * this.data.acceleration * dt;
+            }
+          }
+
+          // 2. LEFT HAND: STEERING (Move hand left/right)
+          if (this.leftPinched && this.leftHand) {
+            this.leftHand.object3D.getWorldPosition(this.currentLeftPos);
+            
+            // Convert positions to local space of the rig so we know which way is truly "Left" or "Right"
+            let localStart = this.el.object3D.worldToLocal(this.leftStartPos.clone());
+            let localCurrent = this.el.object3D.worldToLocal(this.currentLeftPos.clone());
+            
+            // X-axis difference: positive means hand moved right, negative means hand moved left
+            let moveX = localCurrent.x - localStart.x;
+            debugLeftMove = moveX;
+
+            if (Math.abs(moveX) > this.data.deadzone) {
+              // Intensity based on how far you moved your hand sideways
+              let turnIntensity = (Math.abs(moveX) - this.data.deadzone) * Math.sign(moveX);
+              
+              // Rotate rig: minus sign ensures natural leaning physics
+              this.el.object3D.rotation.y -= turnIntensity * this.data.turnSensitivity * dt;
+              
+              turnDirectionText = turnIntensity > 0 ? "RIGHT" : "LEFT";
+            }
+          }
+
+          // 3. BRAKING LOGIC
+          if (!this.rightPinched && !this.leftPinched) {
+            // HARD BRAKE
+            this.speed *= Math.pow(0.001, dt); 
+            turnDirectionText = "BRAKING!";
+          } else if (!this.rightPinched) {
+            // COASTING
+            this.speed *= Math.pow(0.3, dt);
+          }
+
+          if (this.speed > this.data.maxSpeed) this.speed = this.data.maxSpeed;
+          if (this.speed < 0.05) this.speed = 0;
+
+          // 4. MOVE THE BIKE FORWARD (Explicit World Vector)
+          if (this.speed > 0) {
+            let forward = new THREE.Vector3(0, 0, -1);
+            forward.applyQuaternion(this.el.object3D.quaternion);
+            forward.y = 0; // Lock strictly to the ground
+            
+            if (forward.lengthSq() > 0) {
+                forward.normalize();
+                this.el.object3D.position.addScaledVector(forward, this.speed * dt);
+            }
+          }
+
+          // 5. UPDATE DASHBOARD UI
+          if (this.odoText) {
+            let displaySpeed = Math.round(this.speed * 10) / 10;
+            
+            let color = '#00FF00'; // Green while riding
+            if (!this.rightPinched && !this.leftPinched) color = '#FF4444'; // Red while braking
+            
+            let statusText = "PINCH & MOVE HANDS TO DRIVE";
+            if (this.rightPinched || this.leftPinched) statusText = `[ ${turnDirectionText} ]`;
+            
+            // Format debug string so it's readable
+            let dRightStr = (debugRightDist * 100).toFixed(1) + "cm"; // Show in cm
+            let dLeftStr = (debugLeftMove > 0 ? "+" : "") + (debugLeftMove * 100).toFixed(1) + "cm";
+
+            this.odoText.setAttribute('value', 
+              `${statusText}\nTHROTTLE: ${throttlePercent}%\nSPEED: ${displaySpeed}m/s\n\n(Debug: Pull Dist=${dRightStr}, Steer=${dLeftStr})`
+            );
+            this.odoText.setAttribute('color', color);
+          }
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <a-scene background="color: #87CEEB">
+      
+      <!-- PLAYER RIG -->
+      <a-entity id="rig" position="0 0 0" motorcycle-rig>
+        
+        <!-- Camera with HUD -->
+        <a-camera id="camera" position="0 1.6 0">
+          <!-- Odometer attached to Camera so it acts like a HUD -->
+          <a-entity id="odometer" position="0 -0.2 -0.6" rotation="-15 0 0">
+             <a-plane width="0.9" height="0.4" color="#111111" opacity="0.85"></a-plane>
+             <a-text id="odo-text" 
+                     value="WAITING FOR HANDS..." 
+                     align="center" 
+                     position="0 0 0.01" 
+                     color="#FF4444" 
+                     width="1.2"
+                     font="monoid">
+             </a-text>
+          </a-entity>
+        </a-camera>
+        
+        <!-- Left Hand -->
+        <a-entity id="leftHand" hand-tracking-controls="hand: left; modelColor: #cbd5e1;"></a-entity>
+        
+        <!-- Right Hand -->
+        <a-entity id="rightHand" hand-tracking-controls="hand: right; modelColor: #cbd5e1;"></a-entity>
+      </a-entity>
+
+      <!-- ENVIRONMENT -->
+      <a-plane position="0 0.01 0" rotation="-90 0 0" width="6" height="2000" color="#333333"></a-plane>
+      <a-plane position="0 0.02 0" rotation="-90 0 0" width="0.2" height="2000" color="#FFFFFF"></a-plane>
+      <a-plane position="0 0 0" rotation="-90 0 0" width="2000" height="2000" color="#5C7A4A"></a-plane>
+      <a-entity forest-scenery></a-entity>
+      <a-light type="ambient" color="#fff" intensity="0.6"></a-light>
+      <a-light type="directional" position="-2 5 -2" intensity="0.5" castShadow="true"></a-light>
+
+    </a-scene>
+  </body>
 </html>

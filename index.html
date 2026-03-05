@@ -79,13 +79,20 @@
           // References
           this.rightHand = document.querySelector('#rightHand');
           this.leftHand = document.querySelector('#leftHand');
-          this.dashboard = document.querySelector('#dashboard');
+          this.odoText = null; // Will fetch in tick to ensure it's loaded
           
+          // Helper to normalize angle differences (fixes Gimbal Lock wrap-around)
+          this.getAngleDiff = function(a, b) {
+            let diff = a - b;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            return diff;
+          };
+
           // RIGHT HAND EVENTS (Throttle)
           this.rightHand.addEventListener('pinchstarted', () => {
             this.rightPinched = true;
-            let euler = new THREE.Euler().setFromQuaternion(this.rightHand.object3D.quaternion, 'YXZ');
-            this.initialRightPitch = euler.x;
+            this.initialRightPitch = this.rightHand.object3D.rotation.x;
           });
           this.rightHand.addEventListener('pinchended', () => {
             this.rightPinched = false;
@@ -94,8 +101,7 @@
           // LEFT HAND EVENTS (Steering)
           this.leftHand.addEventListener('pinchstarted', () => {
             this.leftPinched = true;
-            let euler = new THREE.Euler().setFromQuaternion(this.leftHand.object3D.quaternion, 'YXZ');
-            this.initialLeftRoll = euler.z; // Z axis maps to rolling/tilting the wrist
+            this.initialLeftRoll = this.leftHand.object3D.rotation.z;
           });
           this.leftHand.addEventListener('pinchended', () => {
             this.leftPinched = false;
@@ -106,13 +112,20 @@
           if (!deltaTime) return;
           const dt = deltaTime / 1000; 
           
+          // Fetch UI element if not cached
+          if (!this.odoText) this.odoText = document.querySelector('#odo-text');
+          
           let throttlePercent = 0;
           let turnDirectionText = "STRAIGHT";
+          let debugRight = 0;
+          let debugLeft = 0;
 
           // 1. RIGHT HAND: ACCELERATION (Twist wrist)
-          if (this.rightPinched) {
-            let euler = new THREE.Euler().setFromQuaternion(this.rightHand.object3D.quaternion, 'YXZ');
-            let pitchDiff = Math.abs(euler.x - this.initialRightPitch);
+          if (this.rightPinched && this.rightHand) {
+            let currentPitch = this.rightHand.object3D.rotation.x;
+            let pitchDiff = Math.abs(this.getAngleDiff(currentPitch, this.initialRightPitch));
+            
+            debugRight = pitchDiff; // For UI
 
             if (pitchDiff > this.data.deadzone) {
               let throttle = Math.min((pitchDiff - this.data.deadzone) / 0.8, 1.0);
@@ -122,16 +135,17 @@
           }
 
           // 2. LEFT HAND: STEERING (Tilt wrist)
-          if (this.leftPinched) {
-            let euler = new THREE.Euler().setFromQuaternion(this.leftHand.object3D.quaternion, 'YXZ');
-            let rollDiff = euler.z - this.initialLeftRoll;
+          if (this.leftPinched && this.leftHand) {
+            let currentRoll = this.leftHand.object3D.rotation.z;
+            let rollDiff = this.getAngleDiff(currentRoll, this.initialLeftRoll);
+            
+            debugLeft = rollDiff; // For UI
 
             if (Math.abs(rollDiff) > this.data.deadzone) {
               // Calculate turn intensity based on tilt
               let turnIntensity = (Math.abs(rollDiff) - this.data.deadzone) * Math.sign(rollDiff);
               
               // Apply rotation to the entire Rig around the Y axis
-              // (Adding rollDiff to Y rotation causes intuitive left/right steering)
               this.el.object3D.rotation.y += turnIntensity * this.data.turnSensitivity * dt;
               
               turnDirectionText = turnIntensity > 0 ? "LEFT" : "RIGHT";
@@ -154,7 +168,7 @@
 
           // 4. MOVE THE BIKE FORWARD
           if (this.speed > 0) {
-            // Get the current forward direction of the Rig (so you drive where the rig points, not where you look)
+            // Get the current forward direction of the Rig
             let forward = new THREE.Vector3(0, 0, -1);
             forward.applyQuaternion(this.el.object3D.quaternion);
             forward.normalize();
@@ -164,16 +178,19 @@
           }
 
           // 5. UPDATE DASHBOARD UI
-          if (this.dashboard) {
+          if (this.odoText) {
             let displaySpeed = Math.round(this.speed * 10) / 10;
             
             let color = '#00FF00'; // Green while riding
             if (!this.rightPinched && !this.leftPinched) color = '#FF4444'; // Red while braking
             
-            this.dashboard.setAttribute('text', 'value', 
-              `[ ${turnDirectionText} ]\nTHROTTLE: ${throttlePercent}%\nSPEED: ${displaySpeed}m/s`
+            let statusText = "GRAB BOTH HANDS";
+            if (this.rightPinched || this.leftPinched) statusText = `[ ${turnDirectionText} ]`;
+            
+            this.odoText.setAttribute('value', 
+              `${statusText}\nTHROTTLE: ${throttlePercent}%\nSPEED: ${displaySpeed}m/s\n\n(Debug: Twist=${Math.round(debugRight*57.3)}, Tilt=${Math.round(debugLeft*57.3)})`
             );
-            this.dashboard.setAttribute('text', 'color', color);
+            this.odoText.setAttribute('color', color);
           }
         }
       });
@@ -187,20 +204,25 @@
         
         <!-- Camera -->
         <a-camera id="camera" position="0 1.6 0"></a-camera>
+
+        <!-- Large Dashboard / Odometer in front of the rider -->
+        <a-entity id="odometer" position="0 0.9 -0.6" rotation="-20 0 0">
+           <a-plane width="1.2" height="0.65" color="#111111" opacity="0.95"></a-plane>
+           <a-text id="odo-text" 
+                   value="WAITING FOR HANDS..." 
+                   align="center" 
+                   position="0 0 0.01" 
+                   color="#FF4444" 
+                   width="1.8"
+                   font="monoid">
+           </a-text>
+        </a-entity>
         
         <!-- Left Hand (Steering) -->
         <a-entity id="leftHand" hand-tracking-controls="hand: left; modelColor: #cbd5e1;"></a-entity>
         
-        <!-- Right Hand (Throttle + Dashboard) -->
-        <a-entity id="rightHand" hand-tracking-controls="hand: right; modelColor: #cbd5e1;">
-            
-            <!-- Wrist Dashboard -->
-            <a-entity id="dashboard" 
-                      position="-0.08 0.05 0.05" 
-                      rotation="-45 -90 0" 
-                      text="value: GRAB BOTH HANDS\nTHROTTLE: 0%\nSPEED: 0m/s; color: #FF4444; width: 0.5; align: left; font: monoid;">
-            </a-entity>
-        </a-entity>
+        <!-- Right Hand (Throttle) -->
+        <a-entity id="rightHand" hand-tracking-controls="hand: right; modelColor: #cbd5e1;"></a-entity>
       </a-entity>
 
       <!-- ENVIRONMENT -->

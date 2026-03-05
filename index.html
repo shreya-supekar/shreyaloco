@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>A-Frame VR: Motorcycle Hand Rev Locomotion</title>
+    <!-- Use A-Frame 1.4.2 which has stable hand-tracking support -->
+    <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+
+    <script>
+      /**
+       * CUSTOM COMPONENT: hand-rev-locomotion
+       * Handles physics-based movement using wrist rotation (Motorcycle Rev)
+       */
+      AFRAME.registerComponent('hand-rev-locomotion', {
+        schema: {
+          accelerationRate: { type: 'number', default: 25.0 }, // How fast you speed up
+          friction: { type: 'number', default: 0.15 },         // How quickly you slow down (lower = faster stop)
+          maxSpeed: { type: 'number', default: 12.0 },         // Top speed cap
+          deadzone: { type: 'number', default: 0.05 }          // Ignore tiny wrist movements
+        },
+
+        init: function () {
+          // Physics state
+          this.velocity = new THREE.Vector3();
+          this.isGrabbing = false;
+          this.initialPitch = 0;
+          
+          // Element References
+          this.camera = document.querySelector('#camera');
+          this.rig = document.querySelector('#rig');
+          this.dashboard = document.querySelector('#dashboard');
+          
+          // Bind event listeners
+          this.onPinchStart = this.onPinchStart.bind(this);
+          this.onPinchEnd = this.onPinchEnd.bind(this);
+          
+          this.el.addEventListener('pinchstarted', this.onPinchStart);
+          this.el.addEventListener('pinchended', this.onPinchEnd);
+        },
+
+        onPinchStart: function (evt) {
+          this.isGrabbing = true;
+          // Capture the exact X-axis rotation (pitch) of the hand when the pinch begins
+          this.initialPitch = this.el.object3D.rotation.x;
+          this.dashboard.setAttribute('text', 'color', '#00FF00'); // Turn dashboard green
+        },
+
+        onPinchEnd: function (evt) {
+          this.isGrabbing = false;
+          this.dashboard.setAttribute('text', 'color', '#FFFFFF'); // Revert dashboard color
+        },
+
+        tick: function (time, deltaTime) {
+          if (!deltaTime) return;
+          
+          // Convert deltaTime to seconds for physics calculations
+          const dt = deltaTime / 1000; 
+          let currentSpeed = this.velocity.length();
+          let throttlePercent = 0;
+
+          // 1. Calculate Acceleration if Revving
+          if (this.isGrabbing) {
+            // Calculate how far the wrist has rotated from the starting pinch point
+            let currentPitch = this.el.object3D.rotation.x;
+            
+            // Depending on headset, pulling the wrist back might be a positive or negative angle.
+            // Using absolute difference ensures turning the wrist acts as a throttle.
+            let pitchDifference = Math.abs(currentPitch - this.initialPitch);
+
+            if (pitchDifference > this.data.deadzone) {
+              // Calculate throttle intensity (cap it at a max rotation of about 45 degrees / 0.8 rads)
+              let throttle = Math.min(pitchDifference / 0.8, 1.0);
+              throttlePercent = Math.round(throttle * 100);
+
+              // Get the direction the camera is facing
+              let direction = new THREE.Vector3();
+              this.camera.object3D.getWorldDirection(direction);
+              direction.y = 0; // Lock to the ground plane
+              direction.normalize(); // Ensure the vector length is exactly 1
+
+              // Apply acceleration vector to velocity
+              let acceleration = throttle * this.data.accelerationRate * dt;
+              this.velocity.add(direction.multiplyScalar(acceleration));
+            }
+          }
+
+          // 2. Apply Physics: Friction / Drag (Frame-rate independent)
+          // The velocity naturally decays over time when you aren't throttling
+          let frictionFactor = Math.pow(this.data.friction, dt);
+          this.velocity.multiplyScalar(frictionFactor);
+
+          // 3. Apply Physics: Speed Limits
+          if (this.velocity.length() > this.data.maxSpeed) {
+            this.velocity.setLength(this.data.maxSpeed);
+          }
+
+          // Stop completely if moving incredibly slowly (prevents infinite micro-sliding)
+          if (this.velocity.length() < 0.01) {
+            this.velocity.set(0, 0, 0);
+          }
+
+          // 4. Update the Rig's Position
+          if (this.velocity.length() > 0) {
+            this.rig.object3D.position.addScaledVector(this.velocity, dt);
+          }
+
+          // 5. Update Wrist Dashboard UI
+          if (this.dashboard) {
+            let displaySpeed = Math.round(this.velocity.length() * 10) / 10;
+            this.dashboard.setAttribute('text', 'value', 
+              `THROTTLE: ${throttlePercent}%\nSPEED: ${displaySpeed}m/s`
+            );
+          }
+        },
+
+        remove: function () {
+          // Cleanup listeners
+          this.el.removeEventListener('pinchstarted', this.onPinchStart);
+          this.el.removeEventListener('pinchended', this.onPinchEnd);
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <!-- A-Frame Scene -->
+    <a-scene background="color: #0F172A">
+      
+      <!-- PLAYER RIG -->
+      <!-- The rig holds the camera and hands. We move the rig, not the camera directly. -->
+      <a-entity id="rig" position="0 0 0">
+        
+        <!-- Camera / Head -->
+        <a-camera id="camera" position="0 1.6 0" look-controls="pointerLockEnabled: false"></a-camera>
+        
+        <!-- Left Hand (For future steering or braking) -->
+        <a-entity id="leftHand" hand-tracking-controls="hand: left; modelColor: #cbd5e1;"></a-entity>
+        
+        <!-- Right Hand (Contains the Locomotion Logic) -->
+        <a-entity id="rightHand" 
+                  hand-tracking-controls="hand: right; modelColor: #cbd5e1;" 
+                  hand-rev-locomotion>
+            
+            <!-- Dashboard HUD attached to the right wrist -->
+            <a-entity id="dashboard" 
+                      position="-0.08 0.05 0.05" 
+                      rotation="-45 -90 0" 
+                      text="value: THROTTLE: 0%\nSPEED: 0m/s; color: white; width: 0.5; align: left; font: monoid;">
+            </a-entity>
+        </a-entity>
+      </a-entity>
+
+      <!-- ENVIRONMENT (Plain World for Scale and Motion Feedback) -->
+      
+      <!-- Infinite Ground Grid -->
+      <a-plane position="0 0 0" 
+               rotation="-90 0 0" 
+               width="500" height="500" 
+               color="#1E293B"
+               material="src: url(https://cdn.aframe.io/a-grid.png); repeat: 500 500; transparent: true; opacity: 0.8">
+      </a-plane>
+
+      <!-- Static Reference Objects (Crucial for optical flow / seeing your movement) -->
+      <!-- Red Box -->
+      <a-box position="-3 1 -5" rotation="0 45 0" color="#EF4444" shadow></a-box>
+      <!-- Blue Sphere -->
+      <a-sphere position="4 1 -8" radius="1" color="#3B82F6" shadow></a-sphere>
+      <!-- Yellow Cylinder -->
+      <a-cylinder position="0 1.5 -15" radius="0.5" height="3" color="#F59E0B" shadow></a-cylinder>
+
+      <!-- Distant monolithic pillars to maintain a sense of direction -->
+      <a-box position="20 10 -40" width="2" height="20" depth="2" color="#64748B"></a-box>
+      <a-box position="-20 10 -40" width="2" height="20" depth="2" color="#64748B"></a-box>
+      <a-box position="0 10 40" width="2" height="20" depth="2" color="#64748B"></a-box>
+      <a-box position="40 10 0" width="2" height="20" depth="2" color="#64748B"></a-box>
+      <a-box position="-40 10 0" width="2" height="20" depth="2" color="#64748B"></a-box>
+
+      <!-- Basic Lighting -->
+      <a-light type="ambient" color="#fff" intensity="0.5"></a-light>
+      <a-light type="directional" position="2 5 -2" intensity="0.8" castShadow="true"></a-light>
+    </a-scene>
+  </body>
+</html>

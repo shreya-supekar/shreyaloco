@@ -48,14 +48,14 @@
 
       /**
        * CUSTOM COMPONENT: motorcycle-rig
-       * Vector-based approach for flawless rotation tracking.
+       * Virtual Joystick Approach (100% reliable position tracking)
        */
       AFRAME.registerComponent('motorcycle-rig', {
         schema: {
           acceleration: { type: 'number', default: 20.0 },
           maxSpeed: { type: 'number', default: 30.0 },
-          turnSensitivity: { type: 'number', default: 1.5 },
-          deadzone: { type: 'number', default: 0.04 } // LOWERED: Makes it much easier to trigger the throttle
+          turnSensitivity: { type: 'number', default: 2.5 },
+          deadzone: { type: 'number', default: 0.05 } // 5cm deadzone so your hands can shake slightly
         },
 
         init: function () {
@@ -64,33 +64,22 @@
           this.rightPinched = false;
           this.leftPinched = false;
           
-          this.initialRightPitch = 0; 
-          this.initialLeftRoll = 0;   
+          // Store the exact 3D position where the pinch started
+          this.rightStartPos = new THREE.Vector3();
+          this.leftStartPos = new THREE.Vector3();
+          
+          this.currentRightPos = new THREE.Vector3();
+          this.currentLeftPos = new THREE.Vector3();
           
           this.rightHand = document.querySelector('#rightHand');
           this.leftHand = document.querySelector('#leftHand');
           this.odoText = document.querySelector('#odo-text');
 
-          // Helper: Gets the Y-component of the hand's forward vector (-1 to 1)
-          // Twisting your wrist up (revving) pushes this value higher.
-          this.getHandPitch = function(handEl) {
-            let dir = new THREE.Vector3(0, 0, -1);
-            dir.applyQuaternion(handEl.object3D.quaternion);
-            return dir.y; 
-          };
-
-          // Helper: Gets the X-component of the hand's UP vector (-1 to 1)
-          // Tilting your wrist left/right changes this value.
-          this.getHandRoll = function(handEl) {
-            let up = new THREE.Vector3(0, 1, 0);
-            up.applyQuaternion(handEl.object3D.quaternion);
-            return up.x; 
-          };
-
           // RIGHT HAND EVENTS (Throttle)
           this.rightHand.addEventListener('pinchstarted', () => {
             this.rightPinched = true;
-            this.initialRightPitch = this.getHandPitch(this.rightHand);
+            // Record the exact world position when you pinch
+            this.rightHand.object3D.getWorldPosition(this.rightStartPos);
           });
           this.rightHand.addEventListener('pinchended', () => {
             this.rightPinched = false;
@@ -99,7 +88,8 @@
           // LEFT HAND EVENTS (Steering)
           this.leftHand.addEventListener('pinchstarted', () => {
             this.leftPinched = true;
-            this.initialLeftRoll = this.getHandRoll(this.leftHand);
+            // Record the exact world position when you pinch
+            this.leftHand.object3D.getWorldPosition(this.leftStartPos);
           });
           this.leftHand.addEventListener('pinchended', () => {
             this.leftPinched = false;
@@ -112,36 +102,40 @@
           
           let throttlePercent = 0;
           let turnDirectionText = "STRAIGHT";
-          let debugRight = 0;
-          let debugLeft = 0;
+          let debugRightDist = 0;
+          let debugLeftMove = 0;
 
-          // 1. RIGHT HAND: ACCELERATION (Twist wrist)
+          // 1. RIGHT HAND: ACCELERATION (Push hand away from start point)
           if (this.rightPinched && this.rightHand) {
-            let currentPitch = this.getHandPitch(this.rightHand);
+            this.rightHand.object3D.getWorldPosition(this.currentRightPos);
             
-            // FIX: Use Absolute value. Twisting up OR down will now successfully trigger the throttle.
-            // This bypasses any issues with how specific headsets interpret axis directions.
-            let pitchDiff = Math.abs(currentPitch - this.initialRightPitch);
-            
-            debugRight = pitchDiff;
+            // Calculate absolute distance moved from the start pinch
+            let distMoved = this.currentRightPos.distanceTo(this.rightStartPos);
+            debugRightDist = distMoved;
 
-            if (pitchDiff > this.data.deadzone) {
-              // Normalize throttle to a 0.0 - 1.0 range based on twist amount
-              let throttle = Math.min((pitchDiff - this.data.deadzone) / 0.4, 1.0);
+            if (distMoved > this.data.deadzone) {
+              // Throttle maxes out if you push your hand 30cm (0.3m) away
+              let throttle = Math.min((distMoved - this.data.deadzone) / 0.3, 1.0);
               throttlePercent = Math.round(throttle * 100);
               this.speed += throttle * this.data.acceleration * dt;
             }
           }
 
-          // 2. LEFT HAND: STEERING (Tilt wrist)
+          // 2. LEFT HAND: STEERING (Move hand left/right)
           if (this.leftPinched && this.leftHand) {
-            let currentRoll = this.getHandRoll(this.leftHand);
-            let rollDiff = currentRoll - this.initialLeftRoll;
+            this.leftHand.object3D.getWorldPosition(this.currentLeftPos);
             
-            debugLeft = rollDiff;
+            // Convert positions to local space of the rig so we know which way is truly "Left" or "Right"
+            let localStart = this.el.object3D.worldToLocal(this.leftStartPos.clone());
+            let localCurrent = this.el.object3D.worldToLocal(this.currentLeftPos.clone());
+            
+            // X-axis difference: positive means hand moved right, negative means hand moved left
+            let moveX = localCurrent.x - localStart.x;
+            debugLeftMove = moveX;
 
-            if (Math.abs(rollDiff) > this.data.deadzone) {
-              let turnIntensity = (Math.abs(rollDiff) - this.data.deadzone) * Math.sign(rollDiff);
+            if (Math.abs(moveX) > this.data.deadzone) {
+              // Intensity based on how far you moved your hand sideways
+              let turnIntensity = (Math.abs(moveX) - this.data.deadzone) * Math.sign(moveX);
               
               // Rotate rig: minus sign ensures natural leaning physics
               this.el.object3D.rotation.y -= turnIntensity * this.data.turnSensitivity * dt;
@@ -165,8 +159,6 @@
 
           // 4. MOVE THE BIKE FORWARD (Explicit World Vector)
           if (this.speed > 0) {
-            // FIX: Explicitly calculate forward vector on the ground plane.
-            // This prevents A-Frame/WebXR local transform conflicts from stopping movement.
             let forward = new THREE.Vector3(0, 0, -1);
             forward.applyQuaternion(this.el.object3D.quaternion);
             forward.y = 0; // Lock strictly to the ground
@@ -184,15 +176,15 @@
             let color = '#00FF00'; // Green while riding
             if (!this.rightPinched && !this.leftPinched) color = '#FF4444'; // Red while braking
             
-            let statusText = "PINCH RIGHT HAND TO START";
+            let statusText = "PINCH & MOVE HANDS TO DRIVE";
             if (this.rightPinched || this.leftPinched) statusText = `[ ${turnDirectionText} ]`;
             
             // Format debug string so it's readable
-            let dRightStr = debugRight.toFixed(2);
-            let dLeftStr = (debugLeft > 0 ? "+" : "") + debugLeft.toFixed(2);
+            let dRightStr = (debugRightDist * 100).toFixed(1) + "cm"; // Show in cm
+            let dLeftStr = (debugLeftMove > 0 ? "+" : "") + (debugLeftMove * 100).toFixed(1) + "cm";
 
             this.odoText.setAttribute('value', 
-              `${statusText}\nTHROTTLE: ${throttlePercent}%\nSPEED: ${displaySpeed}m/s\n\n(Debug: Twist=${dRightStr}, Tilt=${dLeftStr})`
+              `${statusText}\nTHROTTLE: ${throttlePercent}%\nSPEED: ${displaySpeed}m/s\n\n(Debug: Pull Dist=${dRightStr}, Steer=${dLeftStr})`
             );
             this.odoText.setAttribute('color', color);
           }
@@ -210,7 +202,7 @@
         <a-camera id="camera" position="0 1.6 0">
           <!-- Odometer attached to Camera so it acts like a HUD -->
           <a-entity id="odometer" position="0 -0.2 -0.6" rotation="-15 0 0">
-             <a-plane width="0.8" height="0.4" color="#111111" opacity="0.85"></a-plane>
+             <a-plane width="0.9" height="0.4" color="#111111" opacity="0.85"></a-plane>
              <a-text id="odo-text" 
                      value="WAITING FOR HANDS..." 
                      align="center" 

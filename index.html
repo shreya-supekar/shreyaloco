@@ -3,180 +3,236 @@
   <head>
     <meta charset="utf-8">
     <title>A-Frame VR: Motorcycle Hand Rev Locomotion</title>
-    <!-- Use A-Frame 1.4.2 which has stable hand-tracking support -->
     <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
 
     <script>
       /**
-       * CUSTOM COMPONENT: hand-rev-locomotion
-       * Handles physics-based movement using wrist rotation (Motorcycle Rev)
+       * CUSTOM COMPONENT: forest-scenery
+       * Generates a road lined with trees, plus scattered trees in the grassy plain
+       * so turning off the road still looks like a forest.
        */
-      AFRAME.registerComponent('hand-rev-locomotion', {
+      AFRAME.registerComponent('forest-scenery', {
+        init: function () {
+          // 1. Line the road with trees
+          for (let i = 0; i < 200; i++) {
+            let zOffset = - (i * 12); 
+            this.createTree(-5, zOffset);
+            this.createTree(5, zOffset);
+          }
+          
+          // 2. Scatter trees across the plain so you can drive anywhere
+          for (let i = 0; i < 400; i++) {
+            let x = (Math.random() - 0.5) * 400;
+            let z = (Math.random() - 0.5) * 400;
+            
+            // Don't put trees directly on the central road
+            if (Math.abs(x) < 6) continue;
+            this.createTree(x, z);
+          }
+        },
+        
+        createTree: function(x, z) {
+          let tree = document.createElement('a-entity');
+          tree.setAttribute('position', `${x} 0 ${z}`);
+          
+          let trunk = document.createElement('a-cylinder');
+          trunk.setAttribute('radius', '0.25');
+          trunk.setAttribute('height', '2');
+          trunk.setAttribute('color', '#4A3728');
+          trunk.setAttribute('position', '0 1 0');
+          
+          let leaves = document.createElement('a-cone');
+          leaves.setAttribute('radius-bottom', '1.8');
+          leaves.setAttribute('height', '4');
+          leaves.setAttribute('color', '#2E5339');
+          leaves.setAttribute('position', '0 4 0');
+          
+          tree.appendChild(trunk);
+          tree.appendChild(leaves);
+          this.el.appendChild(tree);
+        }
+      });
+
+      /**
+       * CUSTOM COMPONENT: motorcycle-rig
+       * Central controller: Right hand accelerates, Left hand steers, releasing both brakes.
+       */
+      AFRAME.registerComponent('motorcycle-rig', {
         schema: {
-          accelerationRate: { type: 'number', default: 25.0 }, // How fast you speed up
-          friction: { type: 'number', default: 0.15 },         // How quickly you slow down (lower = faster stop)
-          maxSpeed: { type: 'number', default: 12.0 },         // Top speed cap
-          deadzone: { type: 'number', default: 0.05 }          // Ignore tiny wrist movements
+          acceleration: { type: 'number', default: 25.0 },
+          maxSpeed: { type: 'number', default: 25.0 },
+          turnSensitivity: { type: 'number', default: 2.0 }, // How sharply tilting turns the bike
+          deadzone: { type: 'number', default: 0.1 }         // Ignore tiny twitches
         },
 
         init: function () {
-          // Physics state
-          this.velocity = new THREE.Vector3();
-          this.isGrabbing = false;
-          this.initialPitch = 0;
+          this.speed = 0;
           
-          // Element References
-          this.camera = document.querySelector('#camera');
-          this.rig = document.querySelector('#rig');
+          // Hand states
+          this.rightPinched = false;
+          this.leftPinched = false;
+          
+          // Baseline angles when you "grab" the invisible handlebars
+          this.initialRightPitch = 0; // For throttle
+          this.initialLeftRoll = 0;   // For steering
+          
+          // References
+          this.rightHand = document.querySelector('#rightHand');
+          this.leftHand = document.querySelector('#leftHand');
           this.dashboard = document.querySelector('#dashboard');
           
-          // Bind event listeners
-          this.onPinchStart = this.onPinchStart.bind(this);
-          this.onPinchEnd = this.onPinchEnd.bind(this);
-          
-          this.el.addEventListener('pinchstarted', this.onPinchStart);
-          this.el.addEventListener('pinchended', this.onPinchEnd);
-        },
+          // RIGHT HAND EVENTS (Throttle)
+          this.rightHand.addEventListener('pinchstarted', () => {
+            this.rightPinched = true;
+            let euler = new THREE.Euler().setFromQuaternion(this.rightHand.object3D.quaternion, 'YXZ');
+            this.initialRightPitch = euler.x;
+          });
+          this.rightHand.addEventListener('pinchended', () => {
+            this.rightPinched = false;
+          });
 
-        onPinchStart: function (evt) {
-          this.isGrabbing = true;
-          // Capture the exact X-axis rotation (pitch) of the hand when the pinch begins
-          this.initialPitch = this.el.object3D.rotation.x;
-          this.dashboard.setAttribute('text', 'color', '#00FF00'); // Turn dashboard green
-        },
-
-        onPinchEnd: function (evt) {
-          this.isGrabbing = false;
-          this.dashboard.setAttribute('text', 'color', '#FFFFFF'); // Revert dashboard color
+          // LEFT HAND EVENTS (Steering)
+          this.leftHand.addEventListener('pinchstarted', () => {
+            this.leftPinched = true;
+            let euler = new THREE.Euler().setFromQuaternion(this.leftHand.object3D.quaternion, 'YXZ');
+            this.initialLeftRoll = euler.z; // Z axis maps to rolling/tilting the wrist
+          });
+          this.leftHand.addEventListener('pinchended', () => {
+            this.leftPinched = false;
+          });
         },
 
         tick: function (time, deltaTime) {
           if (!deltaTime) return;
-          
-          // Convert deltaTime to seconds for physics calculations
           const dt = deltaTime / 1000; 
-          let currentSpeed = this.velocity.length();
+          
           let throttlePercent = 0;
+          let turnDirectionText = "STRAIGHT";
 
-          // 1. Calculate Acceleration if Revving
-          if (this.isGrabbing) {
-            // Calculate how far the wrist has rotated from the starting pinch point
-            let currentPitch = this.el.object3D.rotation.x;
-            
-            // Depending on headset, pulling the wrist back might be a positive or negative angle.
-            // Using absolute difference ensures turning the wrist acts as a throttle.
-            let pitchDifference = Math.abs(currentPitch - this.initialPitch);
+          // 1. RIGHT HAND: ACCELERATION (Twist wrist)
+          if (this.rightPinched) {
+            let euler = new THREE.Euler().setFromQuaternion(this.rightHand.object3D.quaternion, 'YXZ');
+            let pitchDiff = Math.abs(euler.x - this.initialRightPitch);
 
-            if (pitchDifference > this.data.deadzone) {
-              // Calculate throttle intensity (cap it at a max rotation of about 45 degrees / 0.8 rads)
-              let throttle = Math.min(pitchDifference / 0.8, 1.0);
+            if (pitchDiff > this.data.deadzone) {
+              let throttle = Math.min((pitchDiff - this.data.deadzone) / 0.8, 1.0);
               throttlePercent = Math.round(throttle * 100);
-
-              // Get the direction the camera is facing
-              let direction = new THREE.Vector3();
-              this.camera.object3D.getWorldDirection(direction);
-              direction.y = 0; // Lock to the ground plane
-              direction.normalize(); // Ensure the vector length is exactly 1
-
-              // Apply acceleration vector to velocity
-              let acceleration = throttle * this.data.accelerationRate * dt;
-              this.velocity.add(direction.multiplyScalar(acceleration));
+              this.speed += throttle * this.data.acceleration * dt;
             }
           }
 
-          // 2. Apply Physics: Friction / Drag (Frame-rate independent)
-          // The velocity naturally decays over time when you aren't throttling
-          let frictionFactor = Math.pow(this.data.friction, dt);
-          this.velocity.multiplyScalar(frictionFactor);
+          // 2. LEFT HAND: STEERING (Tilt wrist)
+          if (this.leftPinched) {
+            let euler = new THREE.Euler().setFromQuaternion(this.leftHand.object3D.quaternion, 'YXZ');
+            let rollDiff = euler.z - this.initialLeftRoll;
 
-          // 3. Apply Physics: Speed Limits
-          if (this.velocity.length() > this.data.maxSpeed) {
-            this.velocity.setLength(this.data.maxSpeed);
+            if (Math.abs(rollDiff) > this.data.deadzone) {
+              // Calculate turn intensity based on tilt
+              let turnIntensity = (Math.abs(rollDiff) - this.data.deadzone) * Math.sign(rollDiff);
+              
+              // Apply rotation to the entire Rig around the Y axis
+              // (Adding rollDiff to Y rotation causes intuitive left/right steering)
+              this.el.object3D.rotation.y += turnIntensity * this.data.turnSensitivity * dt;
+              
+              turnDirectionText = turnIntensity > 0 ? "LEFT" : "RIGHT";
+            }
           }
 
-          // Stop completely if moving incredibly slowly (prevents infinite micro-sliding)
-          if (this.velocity.length() < 0.01) {
-            this.velocity.set(0, 0, 0);
+          // 3. BRAKING LOGIC
+          if (!this.rightPinched && !this.leftPinched) {
+            // HARD BRAKE: Releasing both hands stops you very quickly
+            this.speed *= Math.pow(0.005, dt); 
+            turnDirectionText = "BRAKING!";
+          } else if (!this.rightPinched) {
+            // COASTING: Holding left hand but releasing right hand smoothly slows down
+            this.speed *= Math.pow(0.5, dt);
           }
 
-          // 4. Update the Rig's Position
-          if (this.velocity.length() > 0) {
-            this.rig.object3D.position.addScaledVector(this.velocity, dt);
+          // Cap Speed
+          if (this.speed > this.data.maxSpeed) this.speed = this.data.maxSpeed;
+          if (this.speed < 0.05) this.speed = 0;
+
+          // 4. MOVE THE BIKE FORWARD
+          if (this.speed > 0) {
+            // Get the current forward direction of the Rig (so you drive where the rig points, not where you look)
+            let forward = new THREE.Vector3(0, 0, -1);
+            forward.applyQuaternion(this.el.object3D.quaternion);
+            forward.normalize();
+            
+            // Move rig along the forward vector
+            this.el.object3D.position.addScaledVector(forward, this.speed * dt);
           }
 
-          // 5. Update Wrist Dashboard UI
+          // 5. UPDATE DASHBOARD UI
           if (this.dashboard) {
-            let displaySpeed = Math.round(this.velocity.length() * 10) / 10;
+            let displaySpeed = Math.round(this.speed * 10) / 10;
+            
+            let color = '#00FF00'; // Green while riding
+            if (!this.rightPinched && !this.leftPinched) color = '#FF4444'; // Red while braking
+            
             this.dashboard.setAttribute('text', 'value', 
-              `THROTTLE: ${throttlePercent}%\nSPEED: ${displaySpeed}m/s`
+              `[ ${turnDirectionText} ]\nTHROTTLE: ${throttlePercent}%\nSPEED: ${displaySpeed}m/s`
             );
+            this.dashboard.setAttribute('text', 'color', color);
           }
-        },
-
-        remove: function () {
-          // Cleanup listeners
-          this.el.removeEventListener('pinchstarted', this.onPinchStart);
-          this.el.removeEventListener('pinchended', this.onPinchEnd);
         }
       });
     </script>
   </head>
   <body>
-    <!-- A-Frame Scene -->
-    <a-scene background="color: #0F172A">
+    <a-scene background="color: #87CEEB">
       
-      <!-- PLAYER RIG -->
-      <!-- The rig holds the camera and hands. We move the rig, not the camera directly. -->
-      <a-entity id="rig" position="0 0 0">
+      <!-- PLAYER RIG (Has the motorcycle controller attached) -->
+      <a-entity id="rig" position="0 0 0" motorcycle-rig>
         
-        <!-- Camera / Head -->
-        <a-camera id="camera" position="0 1.6 0" look-controls="pointerLockEnabled: false"></a-camera>
+        <!-- Camera -->
+        <a-camera id="camera" position="0 1.6 0"></a-camera>
         
-        <!-- Left Hand (For future steering or braking) -->
+        <!-- Left Hand (Steering) -->
         <a-entity id="leftHand" hand-tracking-controls="hand: left; modelColor: #cbd5e1;"></a-entity>
         
-        <!-- Right Hand (Contains the Locomotion Logic) -->
-        <a-entity id="rightHand" 
-                  hand-tracking-controls="hand: right; modelColor: #cbd5e1;" 
-                  hand-rev-locomotion>
+        <!-- Right Hand (Throttle + Dashboard) -->
+        <a-entity id="rightHand" hand-tracking-controls="hand: right; modelColor: #cbd5e1;">
             
-            <!-- Dashboard HUD attached to the right wrist -->
+            <!-- Wrist Dashboard -->
             <a-entity id="dashboard" 
                       position="-0.08 0.05 0.05" 
                       rotation="-45 -90 0" 
-                      text="value: THROTTLE: 0%\nSPEED: 0m/s; color: white; width: 0.5; align: left; font: monoid;">
+                      text="value: GRAB BOTH HANDS\nTHROTTLE: 0%\nSPEED: 0m/s; color: #FF4444; width: 0.5; align: left; font: monoid;">
             </a-entity>
         </a-entity>
       </a-entity>
 
-      <!-- ENVIRONMENT (Plain World for Scale and Motion Feedback) -->
+      <!-- ENVIRONMENT -->
       
-      <!-- Infinite Ground Grid -->
-      <a-plane position="0 0 0" 
+      <!-- Central Road -->
+      <a-plane position="0 0.01 0" 
                rotation="-90 0 0" 
-               width="500" height="500" 
-               color="#1E293B"
-               material="src: url(https://cdn.aframe.io/a-grid.png); repeat: 500 500; transparent: true; opacity: 0.8">
+               width="6" height="2000" 
+               color="#333333">
+      </a-plane>
+      
+      <!-- Center Line on the road -->
+      <a-plane position="0 0.02 0" 
+               rotation="-90 0 0" 
+               width="0.2" height="2000" 
+               color="#FFFFFF">
       </a-plane>
 
-      <!-- Static Reference Objects (Crucial for optical flow / seeing your movement) -->
-      <!-- Red Box -->
-      <a-box position="-3 1 -5" rotation="0 45 0" color="#EF4444" shadow></a-box>
-      <!-- Blue Sphere -->
-      <a-sphere position="4 1 -8" radius="1" color="#3B82F6" shadow></a-sphere>
-      <!-- Yellow Cylinder -->
-      <a-cylinder position="0 1.5 -15" radius="0.5" height="3" color="#F59E0B" shadow></a-cylinder>
+      <!-- Massive Grass Plain -->
+      <a-plane position="0 0 0" 
+               rotation="-90 0 0" 
+               width="2000" height="2000" 
+               color="#5C7A4A">
+      </a-plane>
 
-      <!-- Distant monolithic pillars to maintain a sense of direction -->
-      <a-box position="20 10 -40" width="2" height="20" depth="2" color="#64748B"></a-box>
-      <a-box position="-20 10 -40" width="2" height="20" depth="2" color="#64748B"></a-box>
-      <a-box position="0 10 40" width="2" height="20" depth="2" color="#64748B"></a-box>
-      <a-box position="40 10 0" width="2" height="20" depth="2" color="#64748B"></a-box>
-      <a-box position="-40 10 0" width="2" height="20" depth="2" color="#64748B"></a-box>
+      <!-- Generates Trees (Roadside + Scattered) -->
+      <a-entity forest-scenery></a-entity>
 
-      <!-- Basic Lighting -->
-      <a-light type="ambient" color="#fff" intensity="0.5"></a-light>
-      <a-light type="directional" position="2 5 -2" intensity="0.8" castShadow="true"></a-light>
+      <!-- Lighting -->
+      <a-light type="ambient" color="#fff" intensity="0.6"></a-light>
+      <a-light type="directional" position="-2 5 -2" intensity="0.5" castShadow="true"></a-light>
+
     </a-scene>
   </body>
 </html>

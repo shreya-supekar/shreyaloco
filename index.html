@@ -2,134 +2,119 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>A-Frame Gesture Locomotion Template</title>
+<title>VR Gesture Locomotion</title>
 
 <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
 
 <script>
 
-AFRAME.registerComponent('gesture-locomotion', {
+AFRAME.registerComponent("gesture-locomotion",{
 
-  schema:{
-    acceleration:{default:6},
-    maxSpeed:{default:8},
-    turnSpeed:{default:2},
-    brake:{default:0.92}
-  },
+schema:{
+acceleration:{default:10},
+maxSpeed:{default:6},
+turnSpeed:{default:2},
+drag:{default:0.95}
+},
 
-  init:function(){
+init:function(){
 
-    this.speed = 0;
+this.speed=0
 
-    this.rightPinch = false;
-    this.leftPinch = false;
+this.rightHand=document.querySelector("#rightHand")
+this.leftHand=document.querySelector("#leftHand")
 
-    this.rightStart = new THREE.Vector3();
-    this.leftStart = new THREE.Vector3();
+this.prevRight=new THREE.Vector3()
+this.currRight=new THREE.Vector3()
 
-    this.rightNow = new THREE.Vector3();
-    this.leftNow = new THREE.Vector3();
+this.prevLeft=new THREE.Vector3()
+this.currLeft=new THREE.Vector3()
 
-    this.rightHand = document.querySelector('#rightHand');
-    this.leftHand = document.querySelector('#leftHand');
+},
 
-    // RIGHT HAND EVENTS
-    this.rightHand.addEventListener("pinchstarted", () => {
-      this.rightPinch = true;
-      this.rightHand.object3D.getWorldPosition(this.rightStart);
-    });
+tick:function(time,delta){
 
-    this.rightHand.addEventListener("pinchended", () => {
-      this.rightPinch = false;
-    });
+if(!delta) return
+const dt=delta/1000
 
-    // LEFT HAND EVENTS
-    this.leftHand.addEventListener("pinchstarted", () => {
-      this.leftPinch = true;
-      this.leftHand.object3D.getWorldPosition(this.leftStart);
-    });
+/* --------- RIGHT HAND THROTTLE --------- */
 
-    this.leftHand.addEventListener("pinchended", () => {
-      this.leftPinch = false;
-    });
-  },
+this.rightHand.object3D.getWorldPosition(this.currRight)
 
-  tick:function(time,delta){
+let forwardMove=this.currRight.z-this.prevRight.z
 
-    if(!delta) return;
-    const dt = delta/1000;
+if(forwardMove<-0.002){
 
-    /* ---------- THROTTLE ---------- */
+let throttle=Math.min(Math.abs(forwardMove)*40,1)
 
-    if(this.rightPinch){
+this.speed+=throttle*this.data.acceleration*dt
 
-      this.rightHand.object3D.getWorldPosition(this.rightNow);
+}
 
-      let dist = this.rightNow.distanceTo(this.rightStart);
+this.prevRight.copy(this.currRight)
 
-      let throttle = Math.min(dist*3,1);
 
-      this.speed += throttle*this.data.acceleration*dt;
+/* --------- LEFT HAND STEERING --------- */
 
-    }
+this.leftHand.object3D.getWorldPosition(this.currLeft)
 
-    /* ---------- STEERING ---------- */
+let steer=this.currLeft.x-this.prevLeft.x
 
-    if(this.leftPinch){
+if(Math.abs(steer)>0.001){
 
-      this.leftHand.object3D.getWorldPosition(this.leftNow);
+this.el.object3D.rotation.y-=steer*this.data.turnSpeed*5
 
-      let startLocal = this.el.object3D.worldToLocal(this.leftStart.clone());
-      let nowLocal = this.el.object3D.worldToLocal(this.leftNow.clone());
+}
 
-      let diff = nowLocal.x - startLocal.x;
+this.prevLeft.copy(this.currLeft)
 
-      this.el.object3D.rotation.y -= diff*this.data.turnSpeed*dt;
 
-    }
+/* --------- SPEED LIMIT --------- */
 
-    /* ---------- BRAKE ---------- */
+if(this.speed>this.data.maxSpeed){
+this.speed=this.data.maxSpeed
+}
 
-    if(!this.rightPinch){
-      this.speed *= this.data.brake;
-    }
 
-    this.speed = Math.min(this.speed,this.data.maxSpeed);
+/* --------- DRAG --------- */
 
-    if(this.speed < 0.01){
-      this.speed = 0;
-    }
+this.speed*=this.data.drag
 
-    /* ---------- FORWARD MOVEMENT ---------- */
+if(this.speed<0.01){
+this.speed=0
+}
 
-    if(this.speed>0){
 
-      let dir = new THREE.Vector3(0,0,-1);
+/* --------- FORWARD MOVEMENT --------- */
 
-      dir.applyQuaternion(this.el.object3D.quaternion);
+if(this.speed>0){
 
-      dir.y = 0;
+let dir=new THREE.Vector3(0,0,-1)
 
-      dir.normalize();
+dir.applyQuaternion(this.el.object3D.quaternion)
 
-      this.el.object3D.position.addScaledVector(dir,this.speed*dt);
+dir.normalize()
 
-    }
+this.el.object3D.position.addScaledVector(dir,this.speed*dt)
 
-  }
+}
 
-});
+}
+
+})
 
 </script>
+
 </head>
+
 
 <body>
 
-<a-scene background="color:#111">
+<a-scene background="color:#101010">
 
-<!-- PLAYER RIG -->
+<!-- PLAYER -->
 
-<a-entity id="rig" position="0 0 0" gesture-locomotion>
+<a-entity id="rig" gesture-locomotion>
 
 <a-camera position="0 1.6 0"></a-camera>
 
@@ -156,11 +141,11 @@ color="#222">
 
 <!-- MOVEMENT REFERENCE OBJECTS -->
 
-<a-box position="0 1 -10" color="#FF0055"></a-box>
-<a-box position="5 1 -20" color="#00FFAA"></a-box>
-<a-box position="-5 1 -30" color="#55AAFF"></a-box>
-<a-box position="3 1 -40" color="#FFFF00"></a-box>
-<a-box position="-3 1 -50" color="#FF8800"></a-box>
+<a-box position="0 1 -10" color="#ff0055"></a-box>
+<a-box position="4 1 -20" color="#00ffaa"></a-box>
+<a-box position="-4 1 -30" color="#5599ff"></a-box>
+<a-box position="2 1 -40" color="#ffff00"></a-box>
+<a-box position="-2 1 -50" color="#ff8800"></a-box>
 
 <a-light type="ambient" intensity="1"></a-light>
 

@@ -2,25 +2,27 @@
 <html>
   <head>
     <meta charset="utf-8">
-    <title>A-Frame VR: Motorcycle Hand Rev Locomotion</title>
+    <title>A-Frame VR: Linear Hand Pull Locomotion</title>
     <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
 
     <script>
       /**
-       * CUSTOM COMPONENT: forest-scenery
-       * Generates a road and trees.
+       * CUSTOM COMPONENT: pretty-forest
+       * Generates a road and visually varied trees for speed reference.
        */
-      AFRAME.registerComponent('forest-scenery', {
+      AFRAME.registerComponent('pretty-forest', {
         init: function () {
+          // Roadside trees
           for (let i = 0; i < 200; i++) {
             let zOffset = - (i * 12); 
-            this.createTree(-5, zOffset);
-            this.createTree(5, zOffset);
+            this.createTree(-6, zOffset);
+            this.createTree(6, zOffset);
           }
+          // Scattered background trees
           for (let i = 0; i < 400; i++) {
             let x = (Math.random() - 0.5) * 400;
             let z = (Math.random() - 0.5) * 400;
-            if (Math.abs(x) < 6) continue;
+            if (Math.abs(x) < 8) continue; // Keep road clear
             this.createTree(x, z);
           }
         },
@@ -28,17 +30,25 @@
           let tree = document.createElement('a-entity');
           tree.setAttribute('position', `${x} 0 ${z}`);
           
+          // Randomize tree size for a prettier look
+          let heightScale = 0.8 + Math.random() * 0.6;
+          
+          // Trunk
           let trunk = document.createElement('a-cylinder');
-          trunk.setAttribute('radius', '0.25');
-          trunk.setAttribute('height', '2');
-          trunk.setAttribute('color', '#4A3728');
-          trunk.setAttribute('position', '0 1 0');
+          trunk.setAttribute('radius', '0.3');
+          trunk.setAttribute('height', 2 * heightScale);
+          trunk.setAttribute('color', '#3d2817');
+          trunk.setAttribute('position', `0 ${1 * heightScale} 0`);
+          
+          // Leaves (Random shades of green)
+          let leafColors = ['#1E4D2B', '#228B22', '#2E8B57', '#006400'];
+          let color = leafColors[Math.floor(Math.random() * leafColors.length)];
           
           let leaves = document.createElement('a-cone');
-          leaves.setAttribute('radius-bottom', '1.8');
-          leaves.setAttribute('height', '4');
-          leaves.setAttribute('color', '#2E5339');
-          leaves.setAttribute('position', '0 4 0');
+          leaves.setAttribute('radius-bottom', 2 * heightScale);
+          leaves.setAttribute('height', 4.5 * heightScale);
+          leaves.setAttribute('color', color);
+          leaves.setAttribute('position', `0 ${(4 * heightScale)} 0`);
           
           tree.appendChild(trunk);
           tree.appendChild(leaves);
@@ -47,53 +57,56 @@
       });
 
       /**
-       * CUSTOM COMPONENT: motorcycle-rig
-       * Virtual Joystick Approach (100% reliable position tracking)
+       * CUSTOM COMPONENT: linear-locomotion
+       * Strict forward movement based on pushing a pinched hand forward.
        */
-      AFRAME.registerComponent('motorcycle-rig', {
+      AFRAME.registerComponent('linear-locomotion', {
         schema: {
-          acceleration: { type: 'number', default: 20.0 },
-          maxSpeed: { type: 'number', default: 30.0 },
-          turnSensitivity: { type: 'number', default: 2.5 },
-          deadzone: { type: 'number', default: 0.05 } // 5cm deadzone so your hands can shake slightly
+          acceleration: { type: 'number', default: 25.0 },
+          maxSpeed: { type: 'number', default: 35.0 },
+          deadzone: { type: 'number', default: 0.05 } // 5cm deadzone
         },
 
         init: function () {
           this.speed = 0;
+          this.isPinched = false;
           
-          this.rightPinched = false;
-          this.leftPinched = false;
-          
-          // Store the exact 3D position where the pinch started
-          this.rightStartPos = new THREE.Vector3();
-          this.leftStartPos = new THREE.Vector3();
-          
-          this.currentRightPos = new THREE.Vector3();
-          this.currentLeftPos = new THREE.Vector3();
+          // Store the LOCAL anchor position (relative to the rig)
+          // This prevents movement bugs when the rig itself is traveling
+          this.anchorLocalPos = new THREE.Vector3();
           
           this.rightHand = document.querySelector('#rightHand');
-          this.leftHand = document.querySelector('#leftHand');
           this.odoText = document.querySelector('#odo-text');
 
-          // RIGHT HAND EVENTS (Throttle)
+          // PINCH START: Register Anchor & Change Color
           this.rightHand.addEventListener('pinchstarted', () => {
-            this.rightPinched = true;
-            // Record the exact world position when you pinch
-            this.rightHand.object3D.getWorldPosition(this.rightStartPos);
-          });
-          this.rightHand.addEventListener('pinchended', () => {
-            this.rightPinched = false;
+            this.isPinched = true;
+            
+            // Get world position and convert to Rig's local space to lock the anchor
+            let worldPos = new THREE.Vector3();
+            this.rightHand.object3D.getWorldPosition(worldPos);
+            this.anchorLocalPos.copy(this.el.object3D.worldToLocal(worldPos));
+
+            this.setHandColor(this.rightHand, '#00FF00'); // Bright Green Active State
           });
 
-          // LEFT HAND EVENTS (Steering)
-          this.leftHand.addEventListener('pinchstarted', () => {
-            this.leftPinched = true;
-            // Record the exact world position when you pinch
-            this.leftHand.object3D.getWorldPosition(this.leftStartPos);
+          // PINCH END: Release Anchor & Revert Color
+          this.rightHand.addEventListener('pinchended', () => {
+            this.isPinched = false;
+            this.setHandColor(this.rightHand, '#cbd5e1'); // Default Grey
           });
-          this.leftHand.addEventListener('pinchended', () => {
-            this.leftPinched = false;
-          });
+        },
+
+        setHandColor: function(handEl, hexColor) {
+          const mesh = handEl.getObject3D('mesh');
+          if (mesh) {
+            mesh.traverse((node) => {
+              if (node.isMesh && node.material) {
+                // Change the material color of the loaded hand model
+                node.material.color.set(hexColor);
+              }
+            });
+          }
         },
 
         tick: function (time, deltaTime) {
@@ -101,90 +114,52 @@
           const dt = deltaTime / 1000; 
           
           let throttlePercent = 0;
-          let turnDirectionText = "STRAIGHT";
-          let debugRightDist = 0;
-          let debugLeftMove = 0;
+          let pushDistance = 0;
 
-          // 1. RIGHT HAND: ACCELERATION (Push hand away from start point)
-          if (this.rightPinched && this.rightHand) {
-            this.rightHand.object3D.getWorldPosition(this.currentRightPos);
+          // 1. ACCELERATION: Measure forward push distance
+          if (this.isPinched && this.rightHand) {
+            let worldPos = new THREE.Vector3();
+            this.rightHand.object3D.getWorldPosition(worldPos);
             
-            // Calculate absolute distance moved from the start pinch
-            let distMoved = this.currentRightPos.distanceTo(this.rightStartPos);
-            debugRightDist = distMoved;
+            // Compare current local hand position to the local anchor position
+            let currentLocalPos = this.el.object3D.worldToLocal(worldPos);
+            
+            // Negative Z is "Forward" in VR local space. 
+            // So subtracting current Z from anchor Z gives positive distance pushed forward.
+            pushDistance = this.anchorLocalPos.z - currentLocalPos.z;
 
-            if (distMoved > this.data.deadzone) {
-              // Throttle maxes out if you push your hand 30cm (0.3m) away
-              let throttle = Math.min((distMoved - this.data.deadzone) / 0.3, 1.0);
+            if (pushDistance > this.data.deadzone) {
+              // Throttle reaches 100% if hand is pushed 35cm past deadzone
+              let throttle = Math.min((pushDistance - this.data.deadzone) / 0.35, 1.0);
               throttlePercent = Math.round(throttle * 100);
               this.speed += throttle * this.data.acceleration * dt;
             }
+          } else {
+            // 2. BRAKING: Coast to a halt when released
+            this.speed *= Math.pow(0.2, dt); 
           }
 
-          // 2. LEFT HAND: STEERING (Move hand left/right)
-          if (this.leftPinched && this.leftHand) {
-            this.leftHand.object3D.getWorldPosition(this.currentLeftPos);
-            
-            // Convert positions to local space of the rig so we know which way is truly "Left" or "Right"
-            let localStart = this.el.object3D.worldToLocal(this.leftStartPos.clone());
-            let localCurrent = this.el.object3D.worldToLocal(this.currentLeftPos.clone());
-            
-            // X-axis difference: positive means hand moved right, negative means hand moved left
-            let moveX = localCurrent.x - localStart.x;
-            debugLeftMove = moveX;
-
-            if (Math.abs(moveX) > this.data.deadzone) {
-              // Intensity based on how far you moved your hand sideways
-              let turnIntensity = (Math.abs(moveX) - this.data.deadzone) * Math.sign(moveX);
-              
-              // Rotate rig: minus sign ensures natural leaning physics
-              this.el.object3D.rotation.y -= turnIntensity * this.data.turnSensitivity * dt;
-              
-              turnDirectionText = turnIntensity > 0 ? "RIGHT" : "LEFT";
-            }
-          }
-
-          // 3. BRAKING LOGIC
-          if (!this.rightPinched && !this.leftPinched) {
-            // HARD BRAKE
-            this.speed *= Math.pow(0.001, dt); 
-            turnDirectionText = "BRAKING!";
-          } else if (!this.rightPinched) {
-            // COASTING
-            this.speed *= Math.pow(0.3, dt);
-          }
-
+          // Cap speed limits
           if (this.speed > this.data.maxSpeed) this.speed = this.data.maxSpeed;
           if (this.speed < 0.05) this.speed = 0;
 
-          // 4. MOVE THE BIKE FORWARD (Explicit World Vector)
+          // 3. APPLY MOVEMENT: Strict Forward Translation (Global/Rig Z Axis)
           if (this.speed > 0) {
-            let forward = new THREE.Vector3(0, 0, -1);
-            forward.applyQuaternion(this.el.object3D.quaternion);
-            forward.y = 0; // Lock strictly to the ground
-            
-            if (forward.lengthSq() > 0) {
-                forward.normalize();
-                this.el.object3D.position.addScaledVector(forward, this.speed * dt);
-            }
+            // We only subtract from Z. No strafing, no turning.
+            this.el.object3D.position.z -= this.speed * dt;
           }
 
-          // 5. UPDATE DASHBOARD UI
+          // 4. UPDATE HUD
           if (this.odoText) {
             let displaySpeed = Math.round(this.speed * 10) / 10;
             
-            let color = '#00FF00'; // Green while riding
-            if (!this.rightPinched && !this.leftPinched) color = '#FF4444'; // Red while braking
+            let color = this.isPinched ? '#00FF00' : '#FF4444'; 
+            let statusText = this.isPinched ? "[ ACCELERATING ]" : "PINCH AND PUSH FORWARD";
             
-            let statusText = "PINCH & MOVE HANDS TO DRIVE";
-            if (this.rightPinched || this.leftPinched) statusText = `[ ${turnDirectionText} ]`;
-            
-            // Format debug string so it's readable
-            let dRightStr = (debugRightDist * 100).toFixed(1) + "cm"; // Show in cm
-            let dLeftStr = (debugLeftMove > 0 ? "+" : "") + (debugLeftMove * 100).toFixed(1) + "cm";
+            let pDistStr = pushDistance > 0 ? (pushDistance * 100).toFixed(1) : "0.0";
 
             this.odoText.setAttribute('value', 
-              `${statusText}\nTHROTTLE: ${throttlePercent}%\nSPEED: ${displaySpeed}m/s\n\n(Debug: Pull Dist=${dRightStr}, Steer=${dLeftStr})`
+              `${statusText}\nTHROTTLE: ${throttlePercent}%\nSPEED: ${displaySpeed}m/s\n\n(Push Vector: +${pDistStr}cm)`
             );
             this.odoText.setAttribute('color', color);
           }
@@ -193,18 +168,17 @@
     </script>
   </head>
   <body>
-    <a-scene background="color: #87CEEB">
+    <a-scene background="color: #60A5FA"> <!-- Bright sky blue -->
       
       <!-- PLAYER RIG -->
-      <a-entity id="rig" position="0 0 0" motorcycle-rig>
+      <a-entity id="rig" position="0 0 0" linear-locomotion>
         
-        <!-- Camera with HUD -->
+        <!-- Camera with fixed HUD -->
         <a-camera id="camera" position="0 1.6 0">
-          <!-- Odometer attached to Camera so it acts like a HUD -->
           <a-entity id="odometer" position="0 -0.2 -0.6" rotation="-15 0 0">
              <a-plane width="0.9" height="0.4" color="#111111" opacity="0.85"></a-plane>
              <a-text id="odo-text" 
-                     value="WAITING FOR HANDS..." 
+                     value="LOADING HANDS..." 
                      align="center" 
                      position="0 0 0.01" 
                      color="#FF4444" 
@@ -214,20 +188,29 @@
           </a-entity>
         </a-camera>
         
-        <!-- Left Hand -->
-        <a-entity id="leftHand" hand-tracking-controls="hand: left; modelColor: #cbd5e1;"></a-entity>
-        
-        <!-- Right Hand -->
+        <!-- Right Hand Only (As requested) -->
         <a-entity id="rightHand" hand-tracking-controls="hand: right; modelColor: #cbd5e1;"></a-entity>
+        
+        <!-- Optional Left hand for symmetry, but it has no controls attached -->
+        <a-entity id="leftHand" hand-tracking-controls="hand: left; modelColor: #cbd5e1;"></a-entity>
+
       </a-entity>
 
       <!-- ENVIRONMENT -->
-      <a-plane position="0 0.01 0" rotation="-90 0 0" width="6" height="2000" color="#333333"></a-plane>
-      <a-plane position="0 0.02 0" rotation="-90 0 0" width="0.2" height="2000" color="#FFFFFF"></a-plane>
-      <a-plane position="0 0 0" rotation="-90 0 0" width="2000" height="2000" color="#5C7A4A"></a-plane>
-      <a-entity forest-scenery></a-entity>
-      <a-light type="ambient" color="#fff" intensity="0.6"></a-light>
-      <a-light type="directional" position="-2 5 -2" intensity="0.5" castShadow="true"></a-light>
+      <!-- The Road -->
+      <a-plane position="0 0.01 0" rotation="-90 0 0" width="8" height="2000" color="#2d3748"></a-plane>
+      <!-- Center Dashed Line (Using repeating texture for speed illusion) -->
+      <a-plane position="0 0.02 0" rotation="-90 0 0" width="0.2" height="2000" color="#FFFFFF" 
+               material="src: url(https://upload.wikimedia.org/wikipedia/commons/thumb/c/ca/1x1.png/120px-1x1.png); repeat: 1 500; transparent: true; opacity: 0.8"></a-plane>
+      <!-- Grass -->
+      <a-plane position="0 0 0" rotation="-90 0 0" width="2000" height="2000" color="#4ade80"></a-plane>
+      
+      <!-- Generated varied trees -->
+      <a-entity pretty-forest></a-entity>
+
+      <!-- Lighting -->
+      <a-light type="ambient" color="#fff" intensity="0.65"></a-light>
+      <a-light type="directional" position="-3 5 2" intensity="0.5" castShadow="true"></a-light>
 
     </a-scene>
   </body>
